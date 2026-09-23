@@ -35,6 +35,10 @@ src/files/DLL64
 src/files/LunaHook
 src/files/Magpie
 src/files/Locale
+src/files/runtime*/
+src/LunaTranslator.exe
+src/LunaTranslator_admin.exe
+src/LunaTranslator_debug.bat
 src/run37.bat
 src/run3732.bat
 settings.json
