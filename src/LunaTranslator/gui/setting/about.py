@@ -23,6 +23,7 @@ from gui.usefulwidget import (
 from gui.setting.setting_year import yearsummary
 from language import UILanguages, Languages
 from myutils.updater import versionchecktask
+from myutils.updatepolicy import ALLOW_IN_APP_BINARY_UPDATES
 
 
 def createversionlabel():
@@ -97,6 +98,10 @@ def changeUIlanguage(_):
 
 
 def updatexx(self):
+    if not ALLOW_IN_APP_BINARY_UPDATES:
+        return getboxlayout(
+            [getsmalllabel("此分支通过 Git 更新；应用内自动更新已禁用。")]
+        )
     return getboxlayout(
         [
             D_getsimpleswitch(
@@ -136,7 +141,11 @@ def _progresssignal4(
 ):
     downloadprogress.setValue(val)
     downloadprogress.setFormat(text)
-    if (val or text) and globalconfig.get("autoupdate", True):
+    if (
+        ALLOW_IN_APP_BINARY_UPDATES
+        and (val or text)
+        and globalconfig.get("autoupdate", False)
+    ):
         updatelayout.setRowVisible(2, True)
 
 

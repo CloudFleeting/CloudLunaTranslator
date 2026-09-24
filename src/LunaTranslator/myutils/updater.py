@@ -7,6 +7,7 @@ from myutils.utils import format_bytes
 import requests, base64
 import shutil, gobject
 from myutils.proxy import getproxy
+from myutils.updatepolicy import in_app_update_enabled
 import zipfile, os
 from LunaSubProcess import LunaSubProcess
 from traceback import print_exc
@@ -78,6 +79,8 @@ def trygetupdate():
 
 
 def doupdate():
+    if not in_app_update_enabled(globalconfig.get("autoupdate", False)):
+        return
     if not gobject.base.update_avalable:
         return
     # uncompress已把更新包规范到固定目录，这里直接使用并校验完整，
@@ -121,9 +124,12 @@ def updatemethod_checkalready(savep, sha256):
 
 @tryprint
 def updatemethod(urls: "tuple[str, str]"):
+    if not in_app_update_enabled(globalconfig.get("autoupdate", False)):
+        return
     url, sha256 = urls
     check_interrupt = lambda: not (
-        globalconfig.get("autoupdate", True) and versionchecktask.empty()
+        in_app_update_enabled(globalconfig.get("autoupdate", False))
+        and versionchecktask.empty()
     )
 
     savep = gobject.getcachedir("update/" + url.split("/")[-1])
@@ -160,6 +166,8 @@ def updatemethod(urls: "tuple[str, str]"):
 
 
 def uncompress(savep):
+    if not in_app_update_enabled(globalconfig.get("autoupdate", False)):
+        return
     gobject.base.progresssignal4.emit(_TR("正在解压"), 10000)
     # 先解压到暂存目录，再整体换入到cache\update\LunaTranslator，
     # 保证该目录任何时刻要么不存在、要么是完整的，退出时不会被更新器拿到半个包
@@ -190,7 +198,7 @@ def versioncheckthread():
         x = versionchecktask.get()
         gobject.base.update_avalable = False
         gobject.base.progresssignal4.emit("", 0)
-        if not x:
+        if not x or not in_app_update_enabled(globalconfig.get("autoupdate", False)):
             continue
         gobject.base.versiontextsignal.emit("获取中")  # ,'',url,url))
         _version = trygetupdate()
@@ -207,7 +215,7 @@ def versioncheckthread():
             and _version
             and version < tuple(int(_) for _ in _version[0][1:].split("."))
         )
-        if not (need and globalconfig.get("autoupdate", True)):
+        if not (need and in_app_update_enabled(globalconfig.get("autoupdate", False))):
             continue
         gobject.base.progresssignal4.emit("……", 0)
         savep = updatemethod(_version[1:])

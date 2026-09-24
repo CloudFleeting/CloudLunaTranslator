@@ -1715,6 +1715,7 @@
         }
     },
     "realtime_edit_target": "realtime_edit",
+    "autoupdate": false,
     "minlength": 0,
     "maxlength": 10000,
     "ocr_fullscreen_detection": false,
