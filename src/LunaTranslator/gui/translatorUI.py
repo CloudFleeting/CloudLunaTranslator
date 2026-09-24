@@ -44,6 +44,7 @@ from gui.gamemanager.dialog import dialog_savedgame_integrated
 from gui.gamemanager.common import startgame
 from gui.dynalang import LAction
 from gui.buttonbar import buttonfunctions, IconLabelX, ButtonBar
+from gui.regionoverlay import RegionOverlayManager
 
 
 class TranslatorWindow(resizableframeless):
@@ -71,6 +72,9 @@ class TranslatorWindow(resizableframeless):
     changeshowhidetranssig = pyqtSignal()
     magpiecallback = pyqtSignal(bool)
     showMarkDownSig = pyqtSignal(str)
+    region_overlay_update = pyqtSignal(object, object)
+    region_overlay_clear = pyqtSignal()
+    region_overlay_refresh = pyqtSignal()
 
     def setbuttonsizeX(self):
         self.changeextendstated()
@@ -776,6 +780,7 @@ class TranslatorWindow(resizableframeless):
         self.isbindedwindow = False
         self.setontopthread_lock = threading.Lock()
         self.ocr_once_follow_rect = None
+        self.region_overlay_manager = RegionOverlayManager()
 
     def displayglobaltooltip_f(self, string):
         QToolTip.showText(QCursor.pos(), string, self)
@@ -811,6 +816,15 @@ class TranslatorWindow(resizableframeless):
         self.closesignal.connect(self.close)
         self.changeshowhiderawsig.connect(self.changeshowhideraw)
         self.changeshowhidetranssig.connect(self.changeshowhidetrans)
+        self.region_overlay_update.connect(self.region_overlay_manager.update_regions)
+        self.region_overlay_clear.connect(self.region_overlay_manager.clear)
+        self.region_overlay_refresh.connect(self.region_overlay_manager.refresh)
+
+    def refresh_region_overlays(self, *_):
+        self.region_overlay_refresh.emit()
+
+    def region_overlay_screen_rects(self):
+        return self.region_overlay_manager.screen_rects()
 
     def safemove(self, pos: QPoint):
         screengeo = qwidget_screen(self).geometry()
@@ -1638,6 +1652,7 @@ class TranslatorWindow(resizableframeless):
 
     def closeEvent(self, a0) -> None:
         try:
+            self.region_overlay_manager.clear()
             if self.fullscreenmanager:
                 self.fullscreenmanager.endX()
             AdapterService.uninit()

@@ -955,5 +955,15 @@
     "下载/解压失败": "Échec du téléchargement / de la décompression",
     "请手动下载并解压到软件目录下": "Veuillez télécharger manuellement et décompresser dans le répertoire du logiciel.",
     "未检测到Unity TMP字体文件。内嵌翻译修改游戏字体需要这些文件，请点击下载：": "Fichier de police Unity TMP non détecté. La modification de la police du jeu par traduction intégrée nécessite ces fichiers, veuillez cliquer pour télécharger :",
-    "插入": "Insérer"
+    "插入": "Insérer",
+    "全屏检测": "Détection plein écran",
+    "保持文本区域分离": "Garder les zones de texte séparées",
+    "翻译位置": "Placement de la traduction",
+    "原文上方": "Au-dessus de l'original",
+    "原文位置": "À la position d'origine",
+    "背景不透明度": "Opacité de l'arrière-plan de superposition",
+    "文本内边距": "Marge intérieure du texte",
+    "最小字体大小": "Taille de police minimale",
+    "距原文距离": "Distance au-dessus du texte original",
+    "全屏区域翻译": "Traduction des zones en plein écran"
 }

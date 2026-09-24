@@ -563,6 +563,7 @@ class BASEOBJECT(QObject):
         statusok=True,
         isRefresh=False,
         skippreprocess=False,
+        isolated=False,
     ):
         with self.solvegottextlock:
             succ = self.textgetmethod_1(
@@ -577,6 +578,7 @@ class BASEOBJECT(QObject):
                 statusok=statusok,
                 isRefresh=isRefresh,
                 skippreprocess=skippreprocess,
+                isolated=isolated,
             )
             if waitforresultcallback and not succ:
                 waitforresultcallback(TranslateResult())
@@ -603,6 +605,7 @@ class BASEOBJECT(QObject):
         statusok=True,
         isRefresh=False,
         skippreprocess=False,
+        isolated=False,
     ):
         if not text:
             return
@@ -620,7 +623,8 @@ class BASEOBJECT(QObject):
                 isFromHook=isFromHook,
                 skippreprocess=skippreprocess,
             )
-            gobject.base.showandsolvesig.emit(origin, text)
+            if not isolated:
+                gobject.base.showandsolvesig.emit(origin, text)
             if not text:
                 return
             if not text.strip():
@@ -631,7 +635,8 @@ class BASEOBJECT(QObject):
 
         if is_auto_run and text == self.currenttext and statusok == self.statusok:
             return
-        self.currentsignature = currentsignature
+        if not isolated:
+            self.currentsignature = currentsignature
         if is_auto_run and (
             len(text) < globalconfig["minlength"]
             or len(text) > globalconfig["maxlength"]
@@ -640,10 +645,11 @@ class BASEOBJECT(QObject):
             if len(text) > globalconfig["maxlength"]:
                 text = text[: globalconfig["maxlength"]] + "……"
 
-            self.translation_ui.displayraw1.emit(text, updateTranslate, is_auto_run)
-            if statusok and not isRefresh:
-                self.transhis.getnewsentencesignal.emit(text)
-            self.maybesetedittext(text)
+            if not isolated:
+                self.translation_ui.displayraw1.emit(text, updateTranslate, is_auto_run)
+                if statusok and not isRefresh:
+                    self.transhis.getnewsentencesignal.emit(text)
+                self.maybesetedittext(text)
             return
 
         _showrawfunction_unsafe = None
@@ -663,21 +669,25 @@ class BASEOBJECT(QObject):
                 self.translation_ui.displayraw1.emit, text, updateTranslate, is_auto_run
             )
 
-        def __(_, uid, text):
-            if _:
-                _()
-            self.history.appendtext(uid, text)
+        if isolated:
+            _showrawfunction = None
+        else:
+            def __(_, uid, text):
+                if _:
+                    _()
+                self.history.appendtext(uid, text)
 
-        _showrawfunction = functools.partial(
-            __, _showrawfunction_unsafe, currentsignature, text
-        )
+            _showrawfunction = functools.partial(
+                __, _showrawfunction_unsafe, currentsignature, text
+            )
         if statusok and not isRefresh:
             self.transhis.getnewsentencesignal.emit(text)
             try:
                 self.textsource.sqlqueueput((text, origin))
             except:
                 pass
-        self.maybesetedittext(text)
+        if not isolated:
+            self.maybesetedittext(text)
 
         if not waitforresultcallback and not globalconfig.get("showfanyi", True):
             return _showrawfunction()
@@ -751,7 +761,9 @@ class BASEOBJECT(QObject):
             _showrawfunction = functools.partial(
                 self._delaypreparefixrank, _showrawfunction, real_fix_rank, is_auto_run
             )
-        if not (updateTranslate or globalconfig.get("refresh_on_get_trans", False)):
+        if _showrawfunction and not (
+            updateTranslate or globalconfig.get("refresh_on_get_trans", False)
+        ):
             _showrawfunction()
             _showrawfunction = None
         read_trans_once_check = []
@@ -774,6 +786,7 @@ class BASEOBJECT(QObject):
                 read_trans_once_check=read_trans_once_check,
                 erroroutput=erroroutput,
                 statusok=statusok,
+                isolated=isolated,
             )
         return True
 
@@ -816,6 +829,7 @@ class BASEOBJECT(QObject):
         read_trans_once_check: list,
         erroroutput,
         statusok=True,
+        isolated=False,
     ):
         callback = partial(
             self.GetTranslationCallback,
@@ -830,6 +844,7 @@ class BASEOBJECT(QObject):
             erroroutput,
             statusok=statusok,
             is_auto_run=is_auto_run,
+            isolated=isolated,
         )
         task = (
             callback,
@@ -875,6 +890,7 @@ class BASEOBJECT(QObject):
         iserror=False,
         statusok=True,
         is_auto_run=True,
+        isolated=False,
     ):
         with self.gettranslatelock:
             usefultranslators.discard(classname)
@@ -930,13 +946,15 @@ class BASEOBJECT(QObject):
                         self.textsource.sqlqueueput((contentraw, classname, res))
                     except:
                         pass
-                gobject.base.dispatch_translate.emit(classname, res)
-                if len(self.currenttranslate):
-                    self.currenttranslate += "\n"
-                self.currenttranslate += res
-                self.currenttranslate_1 = res
+                if not isolated:
+                    gobject.base.dispatch_translate.emit(classname, res)
+                    if len(self.currenttranslate):
+                        self.currenttranslate += "\n"
+                    self.currenttranslate += res
+                    self.currenttranslate_1 = res
                 safe_callback(res)
-                self.latest_is_origin = False
+                if not isolated:
+                    self.latest_is_origin = False
                 if not waitforresultcallback:
                     if (
                         globalconfig.get("read_trans", False)

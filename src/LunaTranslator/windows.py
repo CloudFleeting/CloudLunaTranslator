@@ -270,6 +270,12 @@ class AutoHandle(HANDLE):
 
 _GetWindowRect = _user32.GetWindowRect
 _GetWindowRect.argtypes = HWND, POINTER(RECT)
+_GetClientRect = _user32.GetClientRect
+_GetClientRect.argtypes = HWND, POINTER(RECT)
+_GetClientRect.restype = BOOL
+_ClientToScreen = _user32.ClientToScreen
+_ClientToScreen.argtypes = HWND, POINTER(POINT)
+_ClientToScreen.restype = BOOL
 GetForegroundWindow = _user32.GetForegroundWindow
 GetForegroundWindow.restype = HWND
 WindowFromPoint = _user32.WindowFromPoint
@@ -623,6 +629,19 @@ def GetWindowRect(hwnd):
         return (_rect.left, _rect.top, _rect.right, _rect.bottom)
     else:
         return None
+
+
+def GetClientRectScreen(hwnd):
+    rect = RECT()
+    if not _GetClientRect(hwnd, pointer(rect)):
+        return None
+    top_left = POINT(rect.left, rect.top)
+    bottom_right = POINT(rect.right, rect.bottom)
+    if not _ClientToScreen(hwnd, pointer(top_left)):
+        return None
+    if not _ClientToScreen(hwnd, pointer(bottom_right)):
+        return None
+    return (top_left.x, top_left.y, bottom_right.x, bottom_right.y)
 
 
 def GetCursorPos():

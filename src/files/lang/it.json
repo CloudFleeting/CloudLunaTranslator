@@ -955,5 +955,15 @@
     "下载/解压失败": "Download/decompressione non riuscita",
     "请手动下载并解压到软件目录下": "Si prega di scaricare manualmente ed estrarre nella directory del software.",
     "未检测到Unity TMP字体文件。内嵌翻译修改游戏字体需要这些文件，请点击下载：": "File dei font Unity TMP non rilevati. Per modificare i font di gioco con la traduzione incorporata sono necessari questi file, fare clic per scaricare:",
-    "插入": "Inserire"
+    "插入": "Inserire",
+    "全屏检测": "Rilevamento a schermo intero",
+    "保持文本区域分离": "Mantieni separate le aree di testo",
+    "翻译位置": "Posizionamento della traduzione",
+    "原文上方": "Sopra l'originale",
+    "原文位置": "Nella posizione originale",
+    "背景不透明度": "Opacità dello sfondo in sovrimpressione",
+    "文本内边距": "Spaziatura interna del testo",
+    "最小字体大小": "Dimensione minima del carattere",
+    "距原文距离": "Distanza sopra il testo originale",
+    "全屏区域翻译": "Traduzione delle aree a schermo intero"
 }

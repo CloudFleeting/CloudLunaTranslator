@@ -955,5 +955,15 @@
     "下载/解压失败": "Download/extraction failed.",
     "请手动下载并解压到软件目录下": "Please manually download and extract it to the software directory.",
     "未检测到Unity TMP字体文件。内嵌翻译修改游戏字体需要这些文件，请点击下载：": "Unity TMP font file not detected. These files are required for embedded translation to modify the game font. Please click to download:",
-    "插入": "Insert"
+    "插入": "Insert",
+    "全屏检测": "Full-screen detection",
+    "保持文本区域分离": "Keep text regions separate",
+    "翻译位置": "Translation Placement",
+    "原文上方": "Above original",
+    "原文位置": "In original position",
+    "背景不透明度": "Overlay background opacity",
+    "文本内边距": "Text padding",
+    "最小字体大小": "Minimum font size",
+    "距原文距离": "Distance above original text",
+    "全屏区域翻译": "Full-screen region translation"
 }

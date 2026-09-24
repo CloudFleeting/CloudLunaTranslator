@@ -1717,6 +1717,17 @@
     "realtime_edit_target": "realtime_edit",
     "minlength": 0,
     "maxlength": 10000,
+    "ocr_fullscreen_detection": false,
+    "ocr_keep_regions_separate": true,
+    "ocr_translation_placement": "above",
+    "ocr_overlay_background_opacity": 70,
+    "ocr_overlay_text_padding": 6,
+    "ocr_overlay_min_font_size": 10,
+    "ocr_overlay_gap": 6,
+    "ocr_region_stale_timeout": 1.75,
+    "ocr_fullscreen_change_threshold": 0.985,
+    "ocr_fullscreen_force_interval": 5.0,
+    "ocr_fullscreen_capture_interval": 0.35,
     "ocr_trigger_events": [
         {
             "vkey": "LBUTTON",

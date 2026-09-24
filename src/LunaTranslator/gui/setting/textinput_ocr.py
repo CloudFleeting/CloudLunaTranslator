@@ -339,6 +339,13 @@ def _ocrparam(self):
     return self._ocrparam
 
 
+def _refresh_region_overlay(_=None):
+    try:
+        gobject.base.translation_ui.refresh_region_overlays()
+    except:
+        pass
+
+
 @Singleton
 class showocrimage(saveposwindow):
     def closeEvent(self, e):
@@ -566,8 +573,81 @@ def internal(self):
         ],
     ]
 
+    region_overlay = [
+        [
+            "全屏检测",
+            D_getsimpleswitch(
+                globalconfig,
+                "ocr_fullscreen_detection",
+                callback=_refresh_region_overlay,
+                default=False,
+            ),
+            "",
+            "保持文本区域分离",
+            D_getsimpleswitch(
+                globalconfig,
+                "ocr_keep_regions_separate",
+                default=True,
+            ),
+        ],
+        [
+            "翻译位置",
+            D_getsimplecombobox(
+                ["原文上方", "原文位置"],
+                globalconfig,
+                "ocr_translation_placement",
+                internal=["above", "inplace"],
+                callback=_refresh_region_overlay,
+                default="above",
+            ),
+            "",
+            "背景不透明度",
+            D_getspinbox(
+                0,
+                100,
+                globalconfig,
+                "ocr_overlay_background_opacity",
+                callback=_refresh_region_overlay,
+                default=70,
+            ),
+        ],
+        [
+            "文本内边距",
+            D_getspinbox(
+                0,
+                32,
+                globalconfig,
+                "ocr_overlay_text_padding",
+                callback=_refresh_region_overlay,
+                default=6,
+            ),
+            "",
+            "最小字体大小",
+            D_getspinbox(
+                6,
+                72,
+                globalconfig,
+                "ocr_overlay_min_font_size",
+                callback=_refresh_region_overlay,
+                default=10,
+            ),
+        ],
+        [
+            "距原文距离",
+            D_getspinbox(
+                0,
+                100,
+                globalconfig,
+                "ocr_overlay_gap",
+                callback=_refresh_region_overlay,
+                default=6,
+            ),
+        ],
+    ]
+
     allothers = [
         [dict(title="识别设置", type="grid", grid=reco)],
+        [dict(title="全屏区域翻译", type="grid", grid=region_overlay)],
         [dict(title="自动化执行", grid=autorun, widget=D_getdoclink("ocrparam.html"))],
     ]
 

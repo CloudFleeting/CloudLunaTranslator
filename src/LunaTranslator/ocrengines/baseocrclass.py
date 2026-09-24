@@ -93,7 +93,9 @@ class _OCRBlockS:
         box0 = self.blocks[0].box4
         for i in range(1, len(self.blocks)):
             box0 = self.four_point_box_union(box0, self.blocks[i].box4)
-        return OCRBlock(text=space.join(texts), box=box0)
+        block = OCRBlock(text=space.join(texts), box=box0)
+        block.region_text = "\n".join(texts)
+        return block
 
 
 class OCRBlock:
@@ -105,6 +107,7 @@ class OCRBlock:
 
         self.box = box
         self.text = text
+        self.region_text = text
 
     @property
     def box4(self):
@@ -198,13 +201,15 @@ class OCRResult:
                 vertical = vertical != 0
         self.vertical = bool(vertical)
 
-    def parse(self, space, scale):
+    def parse(self, space, scale, merge_lines=None):
         if not self:
             return
         if self.blocks and scale != 1:
             for block in self.blocks:
                 block.box = tuple(_ / scale for _ in block.box)
-        if globalconfig.get("ocrmergelines", True) and self.hasboxs:
+        if merge_lines is None:
+            merge_lines = globalconfig.get("ocrmergelines", True)
+        if merge_lines and self.hasboxs:
             self.__nearmergeboxs(space)
 
     def __bool__(self):
@@ -353,6 +358,7 @@ class OCRResultParsed:
         engine=None,
         scale=1,
         timecost=None,
+        merge_lines=None,
     ):
         self.timecost = timecost
         self.engine = engine
@@ -362,7 +368,7 @@ class OCRResultParsed:
         self.srclang_1 = srclang_1
         self.result = result
         if result:
-            result.parse(self.space, scale)
+            result.parse(self.space, scale, merge_lines)
 
     @property
     def textonly(self):
@@ -435,7 +441,7 @@ class baseocr(commonbase):
             raise e
         self.needinit = False
 
-    def _private_ocr(self, qimage: QImage):
+    def _private_ocr(self, qimage: QImage, merge_lines=None):
         if self.needinit:
             self.level2init()
         try:
@@ -473,6 +479,7 @@ class baseocr(commonbase):
                 engine=self.typename,
                 scale=scale,
                 timecost=time.time() - t,
+                merge_lines=merge_lines,
             )
         except Exception as e:
             self.needinit = True
