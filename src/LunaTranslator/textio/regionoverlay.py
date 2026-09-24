@@ -646,6 +646,26 @@ def capture_to_logical(capture: RegionRect, display_pixels: RegionRect,
     )
 
 
+def crop_window_capture(
+    source_bounds: RegionRect, requested: RegionRect, image_size: RegionRect
+):
+    """Map a screen-pixel ROI into a captured window image."""
+    if not source_bounds.valid or not requested.valid or not image_size.valid:
+        return RegionRect(0, 0, 0, 0)
+    selected = source_bounds.intersection(requested)
+    if not selected.valid:
+        return RegionRect(0, 0, 0, 0)
+    scale_x = image_size.width / source_bounds.width
+    scale_y = image_size.height / source_bounds.height
+    mapped = RegionRect(
+        round((selected.x - source_bounds.x) * scale_x),
+        round((selected.y - source_bounds.y) * scale_y),
+        round(selected.width * scale_x),
+        round(selected.height * scale_y),
+    )
+    return mapped.intersection(image_size)
+
+
 def advance_empty_scan(streak: int):
     """An isolated empty OCR result is inconclusive; consecutive ones count."""
     streak += 1

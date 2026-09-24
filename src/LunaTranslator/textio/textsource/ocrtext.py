@@ -18,6 +18,7 @@ from textio.regionoverlay import (
     RegionTracker,
     advance_empty_scan,
     capture_to_logical,
+    crop_window_capture,
     combine_detections,
     group_logical_detections,
     select_capture_area,
@@ -319,39 +320,43 @@ class ocrtext(basetext):
 
     def _capture_fullscreen(self, capture_rect: QRect):
         mode = globalconfig.get("ocr_region_capture_mode", "auto")
-        if self.hwnd and mode in ("auto", "window"):
-            for capture, needs_client_crop in (
-                (lambda: NativeUtils.GdiGrabWindow(self.hwnd), False),
-                (lambda: NativeUtils.WinRT.capture_window(self.hwnd), True),
+        if self.hwnd and mode in ("auto", "window", "content"):
+            requested = RegionRect(
+                capture_rect.x(),
+                capture_rect.y(),
+                capture_rect.width(),
+                capture_rect.height(),
+            )
+            for capture, bounds in (
+                (NativeUtils.GdiGrabWindow, windows.GetClientRectScreen),
+                (NativeUtils.WinRT.capture_window, windows.GetExtendedFrameBounds),
             ):
                 try:
-                    data = capture()
+                    data = capture(self.hwnd)
                 except Exception:
                     data = None
                 if not data:
                     continue
                 image = QImage.fromData(data)
                 if not image.isNull():
-                    if needs_client_crop:
-                        window_rect = windows.GetExtendedFrameBounds(
-                            self.hwnd
-                        ) or windows.GetWindowRect(self.hwnd)
-                        if not window_rect:
-                            continue
-                        left, top, right, bottom = window_rect
-                        scale_x = image.width() / max(1, right - left)
-                        scale_y = image.height() / max(1, bottom - top)
-                        client = QRect(
-                            round((capture_rect.x() - left) * scale_x),
-                            round((capture_rect.y() - top) * scale_y),
-                            round(capture_rect.width() * scale_x),
-                            round(capture_rect.height() * scale_y),
-                        ).intersected(image.rect())
-                        if not client.isValid():
-                            continue
-                        image = image.copy(client)
-                    return image
-        return imageCutEx(self.hwnd if mode != "display" else None, capture_rect)
+                    values = bounds(self.hwnd)
+                    if not values:
+                        continue
+                    left, top, right, bottom = values
+                    selected = crop_window_capture(
+                        RegionRect(left, top, right - left, bottom - top),
+                        requested,
+                        RegionRect(0, 0, image.width(), image.height()),
+                    )
+                    if selected.valid:
+                        return image.copy(
+                            selected.x,
+                            selected.y,
+                            selected.width,
+                            selected.height,
+                        )
+            return QImage()
+        return imageCutEx(None, capture_rect)
 
     def _region_translation_callback(self, token, result):
         if result and self.region_tracker.apply_translation(token, result.result):

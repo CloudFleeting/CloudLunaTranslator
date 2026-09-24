@@ -18,6 +18,7 @@ from textio.regionoverlay import (  # noqa: E402
     RegionTracker,
     advance_empty_scan,
     capture_to_logical,
+    crop_window_capture,
     combine_detections,
     estimate_wrapped_layout,
     group_logical_detections,
@@ -378,6 +379,27 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(
             RegionRect(2020, 100, 800, 400),
             capture_to_logical(crop, physical_display, logical_display, 1.5),
+        )
+
+    def test_browser_viewport_is_cropped_from_bound_window_image(self):
+        client = RegionRect(0, 100, 1920, 980)
+        viewport = RegionRect(350, 185, 1200, 720)
+        self.assertEqual(
+            RegionRect(350, 85, 1200, 720),
+            crop_window_capture(
+                client, viewport, RegionRect(0, 0, 1920, 980)
+            ),
+        )
+        self.assertEqual(
+            RegionRect(700, 170, 2400, 1440),
+            crop_window_capture(
+                client, viewport, RegionRect(0, 0, 3840, 1960)
+            ),
+        )
+        self.assertFalse(
+            crop_window_capture(
+                client, RegionRect(0, 0, 120, 60), RegionRect(0, 0, 1920, 980)
+            ).valid
         )
 
 
