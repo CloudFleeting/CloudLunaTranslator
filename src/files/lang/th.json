@@ -965,5 +965,16 @@
     "文本内边距": "ระยะขอบด้านในข้อความ",
     "最小字体大小": "ขนาดแบบอักษรขั้นต่ำ",
     "距原文距离": "ระยะเหนือข้อความต้นฉบับ",
-    "全屏区域翻译": "แปลพื้นที่แบบเต็มหน้าจอ"
+    "全屏区域翻译": "แปลพื้นที่แบบเต็มหน้าจอ",
+    "捕获区域": "Capture area",
+    "自动": "Automatic",
+    "所选窗口": "Selected window",
+    "游戏内容区域（所选OCR范围）": "Game content area (selected OCR region)",
+    "整个显示器": "Entire display",
+    "消失宽限时间（秒）": "Missing-region grace (seconds)",
+    "文本稳定性": "Text stability",
+    "严格": "Strict",
+    "普通": "Normal",
+    "宽松": "Relaxed",
+    "翻译短标签": "Translate short labels"
 }

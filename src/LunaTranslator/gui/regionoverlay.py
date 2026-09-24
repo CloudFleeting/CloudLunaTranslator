@@ -31,6 +31,8 @@ class RegionOverlayWidget(QWidget):
         self._text = ""
         self._font_size = 12
         self._placement = "above"
+        self._last_geometry = None
+        self._last_style = None
         windows.WindowFocus.giveup(self.winId())
 
     @property
@@ -80,21 +82,33 @@ class RegionOverlayWidget(QWidget):
                 return size
         return self.minimum_font_size
 
-    def measure_above(self, source_width, screen_width):
+    def measure_above(self, text, source_width, screen_width):
         maximum = max(self.minimum_font_size, int(globalconfig.get("fontsize", 16)))
         width = min(screen_width, max(120, source_width, min(480, source_width * 2)))
         padding = self._effective_padding(width, 10000)
         metrics = QFontMetrics(self._font(maximum))
         probe = QRect(0, 0, max(1, width - padding * 2), 10000)
-        needed = metrics.boundingRect(probe, self._flags(), self._text)
+        needed = metrics.boundingRect(probe, self._flags(), text)
         return width, max(
             maximum + padding * 2,
             needed.height() + padding * 2,
         )
 
     def set_content(self, text, placement, geometry: RegionRect):
+        style = (
+            self.padding, self.minimum_font_size,
+            globalconfig.get("ocr_overlay_background_opacity", 70),
+            globalconfig.get("fontsize", 16), globalconfig.get("fonttype2", ""),
+        )
+        if (self._text == text and self._placement == placement
+            and self._last_geometry == geometry and self._last_style == style):
+            if text and not self.isVisible():
+                self.show()
+            return
         self._text = text
         self._placement = placement
+        self._last_geometry = geometry
+        self._last_style = style
         self._font_size = self._fit_font(geometry.width, geometry.height)
         self.setGeometry(geometry.x, geometry.y, geometry.width, geometry.height)
         self.update()
@@ -135,6 +149,7 @@ class RegionOverlayManager(QObject):
         self._bounds = RegionRect(0, 0, 0, 0)
         self._screen_rects: tuple[RegionRect, ...] = ()
         self._placements: dict[str, str] = {}
+        self._suspended = False
 
     def update_regions(self, snapshots, bounds):
         if not bounds or not bounds.valid:
@@ -143,6 +158,7 @@ class RegionOverlayManager(QObject):
             return
         self._snapshots = tuple(snapshots or ())
         self._bounds = bounds
+        self._suspended = False
         self.refresh()
 
     def refresh(self, *_):
@@ -174,7 +190,11 @@ class RegionOverlayManager(QObject):
             for snapshot in self._snapshots
             if snapshot.rect.valid
         }
-        for snapshot in self._snapshots:
+        ordered = sorted(
+            self._snapshots,
+            key=lambda item: (-len(item.source_text), -item.rect.area, item.rect.y),
+        )
+        for snapshot in ordered:
             if not snapshot.translation or not snapshot.rect.valid:
                 continue
             widget = self._widgets.get(snapshot.region_id)
@@ -187,9 +207,8 @@ class RegionOverlayManager(QObject):
                 geometry = place_in_original(source, self._bounds)
                 actual_placement = "inplace"
             else:
-                widget._text = snapshot.translation
                 desired_width, desired_height = widget.measure_above(
-                    source.width, self._bounds.width
+                    snapshot.translation, source.width, self._bounds.width
                 )
                 actual_placement, geometry = place_above_original(
                     source,
@@ -208,6 +227,8 @@ class RegionOverlayManager(QObject):
                 widget.hide()
                 continue
             widget.set_content(snapshot.translation, actual_placement, geometry)
+            if self._suspended:
+                widget.hide()
             self._placements[snapshot.region_id] = actual_placement
             occupied.append(geometry)
             screen_rects.append(geometry)
@@ -216,10 +237,17 @@ class RegionOverlayManager(QObject):
     def screen_rects(self):
         return self._screen_rects
 
+    def suspend(self):
+        """Hide a minimized target without retiring its tracked overlays."""
+        self._suspended = True
+        for widget in self._widgets.values():
+            widget.hide()
+
     def clear(self):
         self._snapshots = ()
         self._screen_rects = ()
         self._placements.clear()
+        self._suspended = False
         for widget in self._widgets.values():
             widget.close()
             widget.deleteLater()

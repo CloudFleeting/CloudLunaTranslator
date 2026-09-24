@@ -1,5 +1,6 @@
 import time, json
-from myutils.config import globalconfig
+from hashlib import sha256
+from myutils.config import globalconfig, translatorsetting
 from myutils.utils import checkmd5reloadmodule, parsekeystringtomodvkcode
 import NativeUtils, windows
 from gui.rangeselect import rangeadjust
@@ -15,7 +16,12 @@ from textio.regionoverlay import (
     DetectedTextRegion,
     RegionRect,
     RegionTracker,
+    advance_empty_scan,
+    capture_to_logical,
     combine_detections,
+    group_logical_detections,
+    select_capture_area,
+    suppress_duplicate_detections,
 )
 
 
@@ -168,7 +174,9 @@ class ocrtext(basetext):
         threader(ocr_init)()
         self.ranges: "list[rangemanger]" = []
         self.region_tracker = RegionTracker(
-            stale_timeout=globalconfig.get("ocr_region_stale_timeout", 1.75)
+            stale_timeout=globalconfig.get("ocr_region_stale_timeout", 1.25),
+            stability=globalconfig.get("ocr_region_text_stability", "normal"),
+            debug=globalconfig.get("ocr_region_debug", False),
         )
         self._fullscreen_last_capture = 0.0
         self._fullscreen_last_ocr = 0.0
@@ -179,6 +187,8 @@ class ocrtext(basetext):
         self._fullscreen_overlay_bounds = RegionRect(0, 0, 0, 0)
         self._region_last_language_key = None
         self._fullscreen_screen_name = None
+        self._fullscreen_capture_mode = None
+        self._fullscreen_empty_streak = 0
         self.gettextthread()
 
     def _region_language_key(self):
@@ -187,35 +197,27 @@ class ocrtext(basetext):
             for key in globalconfig.get("fix_translate_rank_rank", [])
             if key in gobject.base.translators
         ]
+        preferred = globalconfig.get("toppest_translator", "")
+        provider_ids = set(active)
+        if preferred:
+            provider_ids.add(preferred)
+        provider_settings = sha256(json.dumps(
+            {key: (globalconfig.get("fanyi", {}).get(key), translatorsetting.get(key))
+             for key in provider_ids},
+            ensure_ascii=False, sort_keys=True, default=str,
+        ).encode("utf-8")).hexdigest()
         return json.dumps(
             (
                 globalconfig.get("srclang4", "auto"),
                 globalconfig.get("tgtlang4", "zh"),
                 globalconfig.get("toppest_translator", ""),
                 active,
+                provider_settings,
             ),
             ensure_ascii=False,
         )
 
     def _fullscreen_context(self):
-        if self.hwnd:
-            if not NativeUtils.IsWindowViewable(self.hwnd):
-                return None
-            values = windows.GetClientRectScreen(self.hwnd) or windows.GetWindowRect(
-                self.hwnd
-            )
-            if not values:
-                return None
-            left, top, right, bottom = values
-            rate = max(0.1, float(NativeUtils.GetDevicePixelRatioF(self.hwnd)))
-            capture = QRect(left, top, right - left, bottom - top)
-            bounds = RegionRect(
-                round(left / rate),
-                round(top / rate),
-                round((right - left) / rate),
-                round((bottom - top) / rate),
-            )
-            return capture, bounds
         screen = None
         if self._fullscreen_screen_name:
             for candidate in QApplication.screens():
@@ -229,16 +231,54 @@ class ocrtext(basetext):
         self._fullscreen_screen_name = screen.name()
         geometry = screen.geometry()
         rate = max(0.1, float(screen.devicePixelRatio()))
-        capture = QRect(
-            round(geometry.x() * rate),
-            round(geometry.y() * rate),
+        display = RegionRect(
+            geometry.x(),
+            geometry.y(),
             round(geometry.width() * rate),
             round(geometry.height() * rate),
         )
-        bounds = RegionRect(
+        mode = globalconfig.get("ocr_region_capture_mode", "auto")
+        window = None
+        if self.hwnd and NativeUtils.IsWindowViewable(self.hwnd):
+            values = windows.GetClientRectScreen(self.hwnd)
+            if values:
+                left, top, right, bottom = values
+                window = RegionRect(left, top, right - left, bottom - top)
+                rate = max(0.1, float(NativeUtils.GetDevicePixelRatioF(self.hwnd)))
+        if self.hwnd and window is None and mode != "display":
+            return None
+        manual = None
+        ranges = [item.range_ui.getrect() for item in self.ranges]
+        if not ranges:
+            ranges = [QRect(*item) for item in globalconfig.get("ocrregions2", []) if item]
+        for selected in ranges:
+            if selected and selected.isValid():
+                manual = RegionRect(selected.x(), selected.y(), selected.width(), selected.height())
+                break
+        selected = select_capture_area(mode, window, display, manual)
+        if not selected:
+            return None
+        if window and mode != "display":
+            best = None
+            for candidate in QApplication.screens():
+                candidate_geometry = candidate.geometry()
+                candidate_rate = max(0.1, float(candidate.devicePixelRatio()))
+                candidate_pixels = RegionRect(
+                    candidate_geometry.x(),
+                    candidate_geometry.y(),
+                    round(candidate_geometry.width() * candidate_rate),
+                    round(candidate_geometry.height() * candidate_rate),
+                )
+                score = selected.intersection(candidate_pixels).area
+                if best is None or score > best[0]:
+                    best = (score, candidate_geometry, candidate_pixels, candidate_rate)
+            if best and best[0]:
+                _, geometry, display, rate = best
+        logical_display = RegionRect(
             geometry.x(), geometry.y(), geometry.width(), geometry.height()
         )
-        return capture, bounds
+        bounds = capture_to_logical(selected, display, logical_display, rate)
+        return QRect(selected.x, selected.y, selected.width, selected.height), bounds
 
     def _emit_region_overlays(self, snapshots, bounds):
         gobject.base.translation_ui.region_overlay_update.emit(snapshots, bounds)
@@ -263,28 +303,55 @@ class ocrtext(basetext):
             text = block.region_text
             if not result.result.isocrtranslate:
                 text = result._100_f(text)
-            detections.append(DetectedTextRegion(rect, text, 1.0))
+            confidence = getattr(block, "confidence", None)
+            detections.append(
+                DetectedTextRegion(
+                    rect, text, float(confidence) if confidence is not None else 0.5
+                )
+            )
+        detections = suppress_duplicate_detections(
+            detections, globalconfig.get("ocr_region_translate_short_labels", False)
+        )
+        detections = group_logical_detections(detections)
         if not globalconfig.get("ocr_keep_regions_separate", True):
             detections = combine_detections(detections)
         return detections
 
     def _capture_fullscreen(self, capture_rect: QRect):
-        if self.hwnd:
-            captures = (
-                lambda: NativeUtils.GdiGrabWindow(self.hwnd),
-                lambda: NativeUtils.WinRT.capture_window(self.hwnd),
-            )
-            for capture in captures:
+        mode = globalconfig.get("ocr_region_capture_mode", "auto")
+        if self.hwnd and mode in ("auto", "window"):
+            for capture, needs_client_crop in (
+                (lambda: NativeUtils.GdiGrabWindow(self.hwnd), False),
+                (lambda: NativeUtils.WinRT.capture_window(self.hwnd), True),
+            ):
                 try:
                     data = capture()
-                except:
+                except Exception:
                     data = None
                 if not data:
                     continue
                 image = QImage.fromData(data)
                 if not image.isNull():
+                    if needs_client_crop:
+                        window_rect = windows.GetExtendedFrameBounds(
+                            self.hwnd
+                        ) or windows.GetWindowRect(self.hwnd)
+                        if not window_rect:
+                            continue
+                        left, top, right, bottom = window_rect
+                        scale_x = image.width() / max(1, right - left)
+                        scale_y = image.height() / max(1, bottom - top)
+                        client = QRect(
+                            round((capture_rect.x() - left) * scale_x),
+                            round((capture_rect.y() - top) * scale_y),
+                            round(capture_rect.width() * scale_x),
+                            round(capture_rect.height() * scale_y),
+                        ).intersected(image.rect())
+                        if not client.isValid():
+                            continue
+                        image = image.copy(client)
                     return image
-        return imageCutEx(self.hwnd, capture_rect)
+        return imageCutEx(self.hwnd if mode != "display" else None, capture_rect)
 
     def _region_translation_callback(self, token, result):
         if result and self.region_tracker.apply_translation(token, result.result):
@@ -327,11 +394,22 @@ class ocrtext(basetext):
     def _scan_fullscreen(self):
         context = self._fullscreen_context()
         if context is None:
-            self._fullscreen_overlay_bounds = RegionRect(0, 0, 0, 0)
-            self._emit_region_overlays((), self._fullscreen_overlay_bounds)
+            gobject.base.translation_ui.region_overlay_suspend.emit()
             return
         capture_rect, overlay_bounds = context
+        capture_mode = globalconfig.get("ocr_region_capture_mode", "auto")
+        if capture_mode != self._fullscreen_capture_mode:
+            self._fullscreen_capture_mode = capture_mode
+            self._fullscreen_last_frame = None
+            self._fullscreen_empty_streak = 0
+            self.region_tracker.clear()
+            gobject.base.translation_ui.region_overlay_clear.emit()
         self._fullscreen_overlay_bounds = overlay_bounds
+        self.region_tracker.stale_timeout = max(
+            0.1, float(globalconfig.get("ocr_region_stale_timeout", 1.25))
+        )
+        self.region_tracker.stability = globalconfig.get("ocr_region_text_stability", "normal")
+        self.region_tracker.debug = globalconfig.get("ocr_region_debug", False)
         language_key = self._region_language_key()
         if language_key != self._region_last_language_key:
             self._region_last_language_key = language_key
@@ -346,8 +424,7 @@ class ocrtext(basetext):
         self._fullscreen_last_capture = now
         image = self._capture_fullscreen(capture_rect)
         if image.isNull():
-            snapshots = self.region_tracker.expire(now)
-            self._emit_region_overlays(snapshots, overlay_bounds)
+            self._emit_region_overlays(self.region_tracker.snapshots(), overlay_bounds)
             return
 
         preview = image.scaledToWidth(
@@ -367,13 +444,17 @@ class ocrtext(basetext):
         )
         if not unchanged:
             self._fullscreen_pending_change = True
-        if unchanged and not self._fullscreen_pending_change and not force_rescan:
+        if (
+            unchanged and not self._fullscreen_pending_change
+            and not force_rescan and not self.region_tracker.needs_confirmation()
+        ):
             snapshots = self.region_tracker.touch(placement, now)
             self._emit_region_overlays(snapshots, overlay_bounds)
             return
-        if now - self._fullscreen_last_ocr < max(
-            0.1, globalconfig.get("ocr_interval", 1.5)
-        ):
+        interval = max(0.1, globalconfig.get("ocr_interval", 1.5))
+        if self.region_tracker.needs_confirmation() or self._fullscreen_empty_streak:
+            interval = min(interval, 0.75)
+        if now - self._fullscreen_last_ocr < interval:
             self._emit_region_overlays(self.region_tracker.snapshots(), overlay_bounds)
             return
 
@@ -388,21 +469,33 @@ class ocrtext(basetext):
             ),
         )
         if result.error:
-            print("Full-screen OCR: " + result.errorstring())
-            self._emit_region_overlays(self.region_tracker.expire(now), overlay_bounds)
+            print("Full-screen OCR failed (engine {}).".format(result.engine or "unknown"))
+            self._fullscreen_pending_change = True
+            self._emit_region_overlays(self.region_tracker.snapshots(), overlay_bounds)
             return
         if result and not result.result.hasboxs:
             if not self._fullscreen_warned_no_boxes:
                 print("Full-screen OCR requires an OCR engine that returns text boxes.")
                 self._fullscreen_warned_no_boxes = True
-            self._emit_region_overlays(self.region_tracker.expire(now), overlay_bounds)
+            self._emit_region_overlays(self.region_tracker.snapshots(), overlay_bounds)
             return
 
         scale_x = max(0.1, image.width() / max(1, overlay_bounds.width))
         scale_y = max(0.1, image.height() / max(1, overlay_bounds.height))
         detections = self._detections_from_result(result, scale_x, scale_y)
+        if not detections and not result.result.blocks:
+            self._fullscreen_empty_streak, confirmed_empty = advance_empty_scan(
+                self._fullscreen_empty_streak
+            )
+            if not confirmed_empty:
+                self._fullscreen_pending_change = True
+                self._emit_region_overlays(self.region_tracker.snapshots(), overlay_bounds)
+                return
+        else:
+            self._fullscreen_empty_streak = 0
         snapshots = self.region_tracker.update(
-            detections, language_key, placement, now
+            detections, language_key, placement, now,
+            frame_size=(overlay_bounds.width, overlay_bounds.height),
         )
         if result.result.isocrtranslate:
             for snapshot in snapshots:
@@ -489,6 +582,8 @@ class ocrtext(basetext):
                 self._fullscreen_pending_change = False
                 self._region_last_language_key = None
                 self._fullscreen_screen_name = None
+                self._fullscreen_capture_mode = None
+                self._fullscreen_empty_streak = 0
                 self.region_tracker.clear()
                 gobject.base.translation_ui.region_overlay_clear.emit()
             rs = self.getuseranges()

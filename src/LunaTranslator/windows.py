@@ -631,6 +631,19 @@ def GetWindowRect(hwnd):
         return None
 
 
+def GetExtendedFrameBounds(hwnd):
+    try:
+        function = windll.dwmapi.DwmGetWindowAttribute
+        function.argtypes = HWND, DWORD, c_void_p, DWORD
+        function.restype = HRESULT
+    except (AttributeError, OSError):
+        return None
+    rect = RECT()
+    if function(hwnd, 9, byref(rect), sizeof(rect)) == 0:
+        return (rect.left, rect.top, rect.right, rect.bottom)
+    return None
+
+
 def GetClientRectScreen(hwnd):
     rect = RECT()
     if not _GetClientRect(hwnd, pointer(rect)):

@@ -575,6 +575,24 @@ def internal(self):
 
     region_overlay = [
         [
+            "捕获区域",
+            D_getsimplecombobox(
+                ["自动", "所选窗口", "游戏内容区域（所选OCR范围）", "整个显示器"],
+                globalconfig,
+                "ocr_region_capture_mode",
+                internal=["auto", "window", "content", "display"],
+                callback=_refresh_region_overlay,
+                default="auto",
+            ),
+            "",
+            "消失宽限时间（秒）",
+            D_getspinbox(
+                0.1, 5.0, globalconfig, "ocr_region_stale_timeout",
+                double=True, callback=_refresh_region_overlay,
+                default=1.25, step=0.05,
+            ),
+        ],
+        [
             "全屏检测",
             D_getsimpleswitch(
                 globalconfig,
@@ -588,6 +606,20 @@ def internal(self):
                 globalconfig,
                 "ocr_keep_regions_separate",
                 default=True,
+            ),
+        ],
+        [
+            "文本稳定性",
+            D_getsimplecombobox(
+                ["严格", "普通", "宽松"], globalconfig,
+                "ocr_region_text_stability",
+                internal=["strict", "normal", "relaxed"],
+                default="normal",
+            ),
+            "",
+            "翻译短标签",
+            D_getsimpleswitch(
+                globalconfig, "ocr_region_translate_short_labels", default=False
             ),
         ],
         [

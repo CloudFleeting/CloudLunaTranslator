@@ -74,6 +74,7 @@ class TranslatorWindow(resizableframeless):
     showMarkDownSig = pyqtSignal(str)
     region_overlay_update = pyqtSignal(object, object)
     region_overlay_clear = pyqtSignal()
+    region_overlay_suspend = pyqtSignal()
     region_overlay_refresh = pyqtSignal()
 
     def setbuttonsizeX(self):
@@ -818,6 +819,7 @@ class TranslatorWindow(resizableframeless):
         self.changeshowhidetranssig.connect(self.changeshowhidetrans)
         self.region_overlay_update.connect(self.region_overlay_manager.update_regions)
         self.region_overlay_clear.connect(self.region_overlay_manager.clear)
+        self.region_overlay_suspend.connect(self.region_overlay_manager.suspend)
         self.region_overlay_refresh.connect(self.region_overlay_manager.refresh)
 
     def refresh_region_overlays(self, *_):

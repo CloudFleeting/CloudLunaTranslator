@@ -24,6 +24,8 @@ If the game supports embedded translation, there will be an "Embed" column of bu
 
 Sometimes, OCR mode can also be used to recognize text from images. Switch to OCR mode, then select the recognition area, and the text will be automatically recognized and translated.  
 
+For separate translations beside each detected text block, open **OCR Settings → Other Settings → Full-screen region translation** and enable **Full-screen detection**. Keep **Keep text regions separate** enabled. **Capture area** can use the selected window, the entire display, or a selected game-content region. For a browser game, first use **Select OCR Region** to outline only the game viewport, then choose **Game content area (selected OCR region)**. This excludes browser tabs, toolbars, and other content outside that region. The **Missing-region grace** and **Text stability** controls help keep translations steady when OCR briefly misses or varies a line.
+
 Please note: Do not use the wrong button. The latter button, which has the same default icon, is only for temporarily selecting and recognizing an image once, not for continuous automatic recognition.  
 
 ![img](https://image.lunatranslator.org/zh/basicuse/ocr.png)  

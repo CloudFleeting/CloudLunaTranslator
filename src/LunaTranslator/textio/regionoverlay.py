@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import OrderedDict
 from difflib import SequenceMatcher
 from hashlib import sha256
 import math
 import threading
 import time
+import unicodedata
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,10 @@ class RegionSnapshot:
     placement: str
     content_hash: str
     generation: int
+    state: str = "active"
+    first_seen: float = 0.0
+    missing_count: int = 0
+    detection_count: int = 1
 
 
 @dataclass
@@ -91,9 +97,22 @@ class _TrackedRegion:
     placement: str
     content_hash: str
     generation: int = 0
+    translated_hash: str = ""
     pending_token: TranslationToken | None = None
     last_request: float = -math.inf
     seen_in_latest_frame: bool = True
+    first_seen: float = 0.0
+    detection_count: int = 1
+    missing_count: int = 0
+    missing_since: float | None = None
+    state: str = "candidate"
+    recent_rects: tuple[RegionRect, ...] = ()
+    candidate_text: str = ""
+    candidate_count: int = 0
+    last_failure: str = ""
+    frame_size: tuple[int, int] | None = None
+    last_logged: str = ""
+    last_logged_at: float = 0.0
 
     def snapshot(self):
         return RegionSnapshot(
@@ -106,45 +125,231 @@ class _TrackedRegion:
             placement=self.placement,
             content_hash=self.content_hash,
             generation=self.generation,
+            state=self.state,
+            first_seen=self.first_seen,
+            missing_count=self.missing_count,
+            detection_count=self.detection_count,
         )
 
 
 def content_hash(text: str, language_key: str):
-    return sha256((language_key + "\0" + text).encode("utf-8")).hexdigest()
+    return sha256((language_key + "\0" + normalize_content(text)).encode("utf-8")).hexdigest()
+
+
+def normalize_content(text: str):
+    return " ".join(unicodedata.normalize("NFKC", text or "").split()).casefold()
+
+
+def normalize_identity(text: str):
+    normalized = normalize_content(text)
+    return "".join(char for char in normalized
+                   if not char.isspace() and not unicodedata.category(char).startswith("P"))
+
+
+def similar_text(first: str, second: str, sensitivity="normal"):
+    a, b = normalize_identity(first), normalize_identity(second)
+    if a == b:
+        return True
+    if not a or not b:
+        return False
+    ratio = SequenceMatcher(None, a, b).ratio()
+    threshold = {"strict": 0.92, "normal": 0.84, "relaxed": 0.75}.get(
+        sensitivity, 0.84
+    )
+    return ratio >= threshold and abs(len(a) - len(b)) <= max(2, len(a) // 4)
 
 
 def _match_score(old: _TrackedRegion, new: DetectedTextRegion):
     iou = old.rect.iou(new.rect)
     scale = max(1.0, math.hypot(old.rect.width, old.rect.height))
     proximity = max(0.0, 1.0 - old.rect.center_distance(new.rect) / (scale * 2.0))
-    text_similarity = SequenceMatcher(None, old.source_text, new.text).ratio()
-    return iou * 0.55 + proximity * 0.30 + text_similarity * 0.15
+    size_similarity = min(old.rect.width, new.rect.width) / max(1, old.rect.width, new.rect.width)
+    size_similarity *= min(old.rect.height, new.rect.height) / max(
+        1, old.rect.height, new.rect.height
+    )
+    text_similarity = SequenceMatcher(
+        None, normalize_identity(old.source_text), normalize_identity(new.text)
+    ).ratio()
+    return iou * 0.43 + proximity * 0.27 + size_similarity * 0.16 + text_similarity * 0.14
+
+
+def suppress_duplicate_detections(detections: list[DetectedTextRegion], translate_short_labels=False):
+    """Discard overlapping duplicates and repeated compact status labels."""
+    clean = []
+    for item in detections:
+        text = (item.text or "").strip()
+        if not item.rect.valid or not text:
+            continue
+        if not translate_short_labels:
+            meaningful = "".join(char for char in text if char.isalnum())
+            if not meaningful or meaningful.isdigit():
+                continue
+            if len(meaningful) == 1 and meaningful.isascii():
+                continue
+        clean.append(item)
+    ranked = sorted(
+        clean,
+        key=lambda item: (item.confidence, len(normalize_content(item.text)), item.rect.area),
+        reverse=True,
+    )
+    retained = []
+    for item in ranked:
+        duplicate = False
+        for other in retained:
+            intersection = item.rect.intersection(other.rect).area
+            containment = intersection / max(1, min(item.rect.area, other.rect.area))
+            if containment < 0.75:
+                continue
+            a, b = normalize_identity(item.text), normalize_identity(other.text)
+            if (item.rect.iou(other.rect) >= 0.85 or similar_text(a, b)
+                or (min(len(a), len(b)) >= 3 and (a in b or b in a))):
+                duplicate = True
+                break
+        if not duplicate:
+            retained.append(item)
+    if not translate_short_labels:
+        counts = {}
+        for item in retained:
+            key = normalize_identity(item.text)
+            counts[key] = counts.get(key, 0) + 1
+        retained = [
+            item for item in retained
+            if not (normalize_identity(item.text).isascii()
+                    and len(normalize_identity(item.text)) <= 4
+                    and item.rect.width <= 80 and item.rect.height <= 28
+                    and counts[normalize_identity(item.text)] > 1)
+        ]
+    return sorted(retained, key=lambda item: (item.rect.y, item.rect.x))
+
+
+def group_logical_detections(detections: list[DetectedTextRegion]):
+    """Join tightly stacked lines, without joining neighboring menu rows."""
+    remaining = sorted(detections, key=lambda item: (item.rect.y, item.rect.x))
+    grouped = []
+    while remaining:
+        first = remaining.pop(0)
+        rect, text, confidence = first.rect, first.text, first.confidence
+        while len(normalize_identity(text)) >= 3:
+            next_index = None
+            for index, candidate in enumerate(remaining):
+                other = candidate.rect
+                gap = other.y - rect.bottom
+                overlap = max(0, min(rect.right, other.right) - max(rect.x, other.x))
+                if (len(normalize_identity(candidate.text)) >= 3
+                    and 0 <= gap <= max(3, min(rect.height, other.height) // 5)
+                    and overlap >= min(rect.width, other.width) * 0.55
+                    and abs(rect.x - other.x) <= max(12, min(rect.width, other.width) * 0.2)):
+                    next_index = index
+                    break
+            if next_index is None:
+                break
+            next_item = remaining.pop(next_index)
+            other = next_item.rect
+            left, top = min(rect.x, other.x), min(rect.y, other.y)
+            rect = RegionRect(left, top, max(rect.right, other.right) - left,
+                              max(rect.bottom, other.bottom) - top)
+            text += "\n" + next_item.text
+            confidence = min(confidence, next_item.confidence)
+        grouped.append(DetectedTextRegion(rect, text, confidence))
+    return grouped
 
 
 class RegionTracker:
     """Tracks independent OCR regions and owns translation cache/generation state."""
 
-    def __init__(self, stale_timeout=1.75, retry_delay=2.0):
-        self.stale_timeout = stale_timeout
+    def __init__(
+        self, stale_timeout=1.25, retry_delay=2.0, stability="normal",
+        cache_limit=512, debug=False, request_timeout=15.0,
+    ):
+        self.stale_timeout = max(0.1, float(stale_timeout))
         self.retry_delay = retry_delay
+        self.stability = stability
+        self.cache_limit = max(1, int(cache_limit))
+        self.request_timeout = max(1.0, float(request_timeout))
+        self.debug = debug
         self._regions: dict[str, _TrackedRegion] = {}
-        self._cache: dict[tuple[str, str], str] = {}
+        self._cache: OrderedDict[tuple[str, str], str] = OrderedDict()
+        self._inflight: dict[tuple[str, str], list[TranslationToken]] = {}
         self._next_id = 1
         self._lock = threading.RLock()
+
+    def _log(self, message, region):
+        if self.debug:
+            now = time.monotonic()
+            if region.last_logged == message and now - region.last_logged_at < 5.0:
+                return
+            region.last_logged = message
+            region.last_logged_at = now
+            print("Region {}: {}".format(region.region_id, message))
+
+    def _cache_key(self, language_key, source_text):
+        return language_key, normalize_content(source_text)
+
+    def _cached(self, language_key, source_text):
+        key = self._cache_key(language_key, source_text)
+        value = self._cache.get(key, "")
+        if value:
+            self._cache.move_to_end(key)
+        return value
+
+    def _remember(self, key, translation):
+        self._cache[key] = translation
+        self._cache.move_to_end(key)
+        while len(self._cache) > self.cache_limit:
+            self._cache.popitem(last=False)
 
     def _new_id(self):
         value = "ocr-region-{}".format(self._next_id)
         self._next_id += 1
         return value
 
+    def needs_confirmation(self):
+        with self._lock:
+            return any(region.state in ("candidate", "temporarily_missing") or
+                       bool(region.candidate_count) for region in self._regions.values())
+
     def _purge_stale(self, now):
-        stale = [
-            key
-            for key, region in self._regions.items()
-            if now - region.last_seen > self.stale_timeout
-        ]
-        for key in stale:
-            self._regions.pop(key, None)
+        for key, region in tuple(self._regions.items()):
+            if region.state == "candidate" and region.missing_count:
+                self._regions.pop(key, None)
+            elif (region.state == "temporarily_missing" and region.missing_count >= 2
+                  and region.missing_since is not None
+                  and now - region.missing_since >= self.stale_timeout):
+                region.state = "retired"
+                self._log("retired after confirmed absence", region)
+                self._regions.pop(key, None)
+        for cache_key, tokens in tuple(self._inflight.items()):
+            if not any(
+                (region := self._regions.get(token.region_id))
+                and region.pending_token == token
+                for token in tokens
+            ):
+                self._inflight.pop(cache_key, None)
+
+    def _match(self, detection, available, frame_size):
+        candidates = []
+        for key in available:
+            region = self._regions[key]
+            old_rect = region.rect
+            if frame_size and region.frame_size and frame_size != region.frame_size:
+                old_w, old_h = region.frame_size
+                new_w, new_h = frame_size
+                old_rect = RegionRect(
+                    round(old_rect.x * new_w / max(1, old_w)),
+                    round(old_rect.y * new_h / max(1, old_h)),
+                    round(old_rect.width * new_w / max(1, old_w)),
+                    round(old_rect.height * new_h / max(1, old_h)),
+                )
+            proxy = _TrackedRegion(region.region_id, old_rect, region.source_text,
+                                   region.translation, region.confidence, region.last_seen,
+                                   region.placement, region.content_hash)
+            score = _match_score(proxy, detection)
+            nearby = old_rect.center_distance(detection.rect) <= max(
+                15, math.hypot(old_rect.width, old_rect.height) * 0.45
+            )
+            if score >= 0.38 and (old_rect.iou(detection.rect) >= 0.12 or nearby):
+                candidates.append((score, key))
+        return max(candidates)[1] if candidates else None
 
     def update(
         self,
@@ -152,26 +357,18 @@ class RegionTracker:
         language_key: str,
         placement: str,
         now: float | None = None,
+        frame_size: tuple[int, int] | None = None,
     ):
         now = time.monotonic() if now is None else now
-        clean = [
-            detection
-            for detection in detections
-            if detection.rect.valid and bool(detection.text and detection.text.strip())
-        ]
+        clean = [d for d in detections if d.rect.valid and d.text and d.text.strip()]
         with self._lock:
             for region in self._regions.values():
                 region.seen_in_latest_frame = False
             available = set(self._regions)
             matched: list[tuple[DetectedTextRegion, _TrackedRegion | None]] = []
             for detection in clean:
-                candidates = [
-                    (key, _match_score(self._regions[key], detection))
-                    for key in available
-                ]
-                candidates.sort(key=lambda item: item[1], reverse=True)
-                if candidates and candidates[0][1] >= 0.38:
-                    key = candidates[0][0]
+                key = self._match(detection, available, frame_size)
+                if key:
                     available.remove(key)
                     matched.append((detection, self._regions[key]))
                 else:
@@ -184,32 +381,86 @@ class RegionTracker:
                         region_id=self._new_id(),
                         rect=detection.rect,
                         source_text=detection.text,
-                        translation=self._cache.get(
-                            (language_key, detection.text), ""
-                        ),
+                        translation=self._cached(language_key, detection.text),
                         confidence=detection.confidence,
                         last_seen=now,
                         placement=placement,
                         content_hash=digest,
+                        first_seen=now,
+                        recent_rects=(detection.rect,),
+                        frame_size=frame_size,
                     )
+                    if detection.confidence >= 0.97 and len(normalize_identity(detection.text)) >= 5:
+                        region.state = "active"
+                    if region.translation:
+                        region.translated_hash = digest
                     self._regions[region.region_id] = region
+                    self._log("created as {}".format(region.state), region)
                     continue
 
-                changed = region.content_hash != digest
-                region.rect = detection.rect
+                if region.state == "temporarily_missing":
+                    self._log("restored during grace period", region)
+                    region.state = "active"
+                if region.state == "candidate":
+                    region.detection_count += 1
+                    if region.detection_count >= 2:
+                        region.state = "active"
+                        self._log("candidate promoted to active", region)
+                old_rect = region.rect
+                if (
+                    old_rect.center_distance(detection.rect) > 2
+                    or abs(old_rect.width - detection.rect.width) > 2
+                    or abs(old_rect.height - detection.rect.height) > 2
+                ):
+                    region.rect = detection.rect
+                region.recent_rects = (region.recent_rects + (detection.rect,))[-4:]
+                region.frame_size = frame_size
                 region.confidence = detection.confidence
                 region.last_seen = now
                 region.placement = placement
                 region.seen_in_latest_frame = True
-                if changed:
-                    region.source_text = detection.text
-                    region.content_hash = digest
-                    region.generation += 1
-                    region.pending_token = None
-                    region.last_request = -math.inf
-                    region.translation = self._cache.get(
-                        (language_key, detection.text), ""
-                    )
+                region.missing_count = 0
+                region.missing_since = None
+                if similar_text(region.source_text, detection.text, self.stability):
+                    if digest != region.content_hash:
+                        self._log("OCR variant rejected as unstable", region)
+                    region.candidate_text = ""
+                    region.candidate_count = 0
+                    continue
+                if similar_text(region.candidate_text, detection.text, self.stability):
+                    region.candidate_count += 1
+                else:
+                    region.candidate_text = detection.text
+                    region.candidate_count = 1
+                clearly_different = SequenceMatcher(
+                    None, normalize_identity(region.source_text),
+                    normalize_identity(detection.text),
+                ).ratio() < 0.5
+                if region.candidate_count < 2 and not (
+                    detection.confidence >= 0.97 and clearly_different
+                ):
+                    continue
+                region.source_text = region.candidate_text
+                region.content_hash = content_hash(region.source_text, language_key)
+                region.generation += 1
+                region.pending_token = None
+                region.last_request = -math.inf
+                region.candidate_text = ""
+                region.candidate_count = 0
+                cached = self._cached(language_key, region.source_text)
+                if cached:
+                    region.translation = cached
+                    region.translated_hash = region.content_hash
+                    self._log("cached translation reused", region)
+
+            for key in available:
+                region = self._regions[key]
+                region.missing_count += 1
+                if region.missing_since is None:
+                    region.missing_since = now
+                    if region.state == "active":
+                        region.state = "temporarily_missing"
+                        self._log("entered temporarily missing state", region)
 
             self._purge_stale(now)
             return self._snapshots_unsafe()
@@ -222,13 +473,11 @@ class RegionTracker:
                 region.placement = placement
                 if region.seen_in_latest_frame:
                     region.last_seen = now
-            self._purge_stale(now)
             return self._snapshots_unsafe()
 
     def expire(self, now: float | None = None):
         now = time.monotonic() if now is None else now
         with self._lock:
-            self._purge_stale(now)
             return self._snapshots_unsafe()
 
     def _snapshots_unsafe(self):
@@ -237,6 +486,7 @@ class RegionTracker:
             for region in sorted(
                 self._regions.values(), key=lambda item: (item.rect.y, item.rect.x)
             )
+            if region.state in ("active", "temporarily_missing")
         )
 
     def snapshots(self):
@@ -250,7 +500,33 @@ class RegionTracker:
         requests = []
         with self._lock:
             for region in self._regions.values():
-                if region.translation or region.pending_token:
+                if region.state != "active":
+                    continue
+                if region.pending_token:
+                    if now - region.last_request < self.request_timeout:
+                        continue
+                    old = region.pending_token
+                    for key, tokens in tuple(self._inflight.items()):
+                        if old in tokens:
+                            self._inflight.pop(key, None)
+                            for request in tokens:
+                                waiting = self._regions.get(request.region_id)
+                                if waiting and waiting.pending_token == request:
+                                    waiting.pending_token = None
+                                    waiting.generation += 1
+                                    waiting.last_failure = "translation request timed out"
+                            break
+                    if region.pending_token == old:
+                        region.pending_token = None
+                        region.generation += 1
+                        region.last_failure = "translation request timed out"
+                desired_key = self._cache_key(language_key, region.source_text)
+                if region.translation and region.translated_hash == region.content_hash:
+                    continue
+                cached = self._cached(language_key, region.source_text)
+                if cached:
+                    region.translation = cached
+                    region.translated_hash = region.content_hash
                     continue
                 if now - region.last_request < self.retry_delay:
                     continue
@@ -262,32 +538,47 @@ class RegionTracker:
                 )
                 region.pending_token = token
                 region.last_request = now
-                requests.append((token, region.source_text))
+                if desired_key in self._inflight:
+                    self._inflight[desired_key].append(token)
+                else:
+                    self._inflight[desired_key] = [token]
+                    requests.append((token, region.source_text))
         return requests
 
     def apply_translation(self, token: TranslationToken, translation: str):
         translation = (translation or "").strip()
         with self._lock:
-            region = self._regions.get(token.region_id)
-            if (
-                not region
-                or region.pending_token != token
-                or region.generation != token.generation
-                or region.content_hash != token.content_hash
-            ):
-                return False
-            region.pending_token = None
-            if not translation:
-                return False
-            region.translation = translation
-            self._cache[(token.language_key, region.source_text)] = translation
-            return True
+            key = next((key for key, tokens in self._inflight.items() if token in tokens), None)
+            tokens = self._inflight.pop(key, [token]) if key else [token]
+            applied = False
+            for request in tokens:
+                region = self._regions.get(request.region_id)
+                if (not region or region.state not in ("active", "temporarily_missing")
+                    or region.pending_token != request or region.generation != request.generation
+                    or region.content_hash != request.content_hash):
+                    continue
+                region.pending_token = None
+                if translation:
+                    region.translation = translation
+                    region.translated_hash = region.content_hash
+                    applied = True
+            if applied and key:
+                self._remember(key, translation)
+            elif not applied:
+                region = self._regions.get(token.region_id)
+                if region:
+                    self._log("stale asynchronous result discarded", region)
+            return applied
 
     def translation_failed(self, token: TranslationToken):
         with self._lock:
-            region = self._regions.get(token.region_id)
-            if region and region.pending_token == token:
-                region.pending_token = None
+            key = next((key for key, tokens in self._inflight.items() if token in tokens), None)
+            tokens = self._inflight.pop(key, [token]) if key else [token]
+            for request in tokens:
+                region = self._regions.get(request.region_id)
+                if region and region.pending_token == request:
+                    region.pending_token = None
+                    region.last_failure = "translation failed"
 
     def set_direct_translation(self, region_id: str, translation: str, language_key: str):
         """Stores text returned by OCR engines that perform translation themselves."""
@@ -297,8 +588,9 @@ class RegionTracker:
             if not region or not translation:
                 return False
             region.translation = translation
+            region.translated_hash = region.content_hash
             region.pending_token = None
-            self._cache[(language_key, region.source_text)] = translation
+            self._remember(self._cache_key(language_key, region.source_text), translation)
             return True
 
     def set_placement(self, placement: str):
@@ -317,14 +609,47 @@ class RegionTracker:
                 region.generation += 1
                 region.pending_token = None
                 region.last_request = -math.inf
-                region.translation = self._cache.get(
-                    (language_key, region.source_text), ""
-                )
+                region.translation = self._cached(language_key, region.source_text)
+                region.translated_hash = region.content_hash if region.translation else ""
             return self._snapshots_unsafe()
 
     def clear(self):
         with self._lock:
             self._regions.clear()
+            self._inflight.clear()
+
+
+def select_capture_area(mode: str, window: RegionRect | None, display: RegionRect,
+                        manual: RegionRect | None):
+    """Screen-pixel crop for the existing OCR capture pipeline."""
+    if mode == "display":
+        return display
+    if mode == "window":
+        return window if window and window.valid else None
+    if mode == "content":
+        if not manual or not manual.valid:
+            return None
+        selected = manual.intersection(
+            window if window and window.valid else display
+        )
+        return selected if selected.valid else None
+    return window if window and window.valid else display
+
+
+def capture_to_logical(capture: RegionRect, display_pixels: RegionRect,
+                       display_logical: RegionRect, pixel_ratio: float):
+    ratio = max(0.1, pixel_ratio)
+    return RegionRect(
+        display_logical.x + round((capture.x - display_pixels.x) / ratio),
+        display_logical.y + round((capture.y - display_pixels.y) / ratio),
+        round(capture.width / ratio), round(capture.height / ratio),
+    )
+
+
+def advance_empty_scan(streak: int):
+    """An isolated empty OCR result is inconclusive; consecutive ones count."""
+    streak += 1
+    return streak, streak >= 2
 
 
 def union_rect(rects: list[RegionRect]):
@@ -382,11 +707,14 @@ def place_above_original(
     candidates = [
         ("above", RegionRect(centered_x, source.y - gap - height, width, height)),
         ("below", RegionRect(centered_x, source.bottom + gap, width, height)),
+        ("left", RegionRect(source.x - gap - width, source.y, width, height)),
+        ("right", RegionRect(source.right + gap, source.y, width, height)),
     ]
     fitting = [
         item
         for item in candidates
-        if item[1].y >= bounds.y and item[1].bottom <= bounds.bottom
+        if item[1].x >= bounds.x and item[1].right <= bounds.right
+        and item[1].y >= bounds.y and item[1].bottom <= bounds.bottom
     ]
     pool = fitting or candidates
     scored = []

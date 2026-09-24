@@ -965,5 +965,16 @@
     "文本内边距": "Textutfyllnad",
     "最小字体大小": "Minsta teckenstorlek",
     "距原文距离": "Avstånd ovanför originaltexten",
-    "全屏区域翻译": "Översättning av helskärmsområden"
+    "全屏区域翻译": "Översättning av helskärmsområden",
+    "捕获区域": "Capture area",
+    "自动": "Automatic",
+    "所选窗口": "Selected window",
+    "游戏内容区域（所选OCR范围）": "Game content area (selected OCR region)",
+    "整个显示器": "Entire display",
+    "消失宽限时间（秒）": "Missing-region grace (seconds)",
+    "文本稳定性": "Text stability",
+    "严格": "Strict",
+    "普通": "Normal",
+    "宽松": "Relaxed",
+    "翻译短标签": "Translate short labels"
 }
